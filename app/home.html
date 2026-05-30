@@ -39,6 +39,11 @@
         No downloads, no passwords, just one link to connect.
       </p>
 
+      <div class="name-entry-container" style="margin-bottom: 24px; display: flex; flex-direction: column; align-items: center; gap: 8px;">
+        <label for="display-name" style="font-size: 13.5px; font-weight: 600; color: #64748b; font-family: 'Inter', sans-serif;">Your Display Name</label>
+        <input type="text" id="display-name" placeholder="Enter your name" style="padding: 12px 24px; border-radius: 999px; border: 1px solid #e2e8f0; width: 280px; text-align: center; font-size: 15px; font-family: inherit; font-weight: 500; outline: none; box-shadow: 0 4px 12px rgba(0,0,0,0.02); transition: all 0.2s;" />
+      </div>
+
       <div class="meeting-actions" style="display: flex; gap: 20px; align-items: center; justify-content: center; margin-bottom: 40px; flex-wrap: wrap;">
         <button id="create-room" class="start-trial-btn" style="display: flex; align-items: center; gap: 8px;">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg>
@@ -78,6 +83,28 @@
   </div>
 
   <script>
+    // Display Name persistence logic
+    const nameInput = document.getElementById("display-name");
+    
+    // Pre-populate if saved in sessionStorage
+    if (sessionStorage.getItem("username")) {
+      nameInput.value = sessionStorage.getItem("username");
+    }
+
+    nameInput.addEventListener("input", (e) => {
+      sessionStorage.setItem("username", e.target.value.trim());
+    });
+
+    // Make input look gorgeous on focus
+    nameInput.addEventListener("focus", () => {
+      nameInput.style.borderColor = "var(--accent)";
+      nameInput.style.boxShadow = "0 8px 24px rgba(59, 130, 246, 0.12)";
+    });
+    nameInput.addEventListener("blur", () => {
+      nameInput.style.borderColor = "#e2e8f0";
+      nameInput.style.boxShadow = "0 4px 12px rgba(0,0,0,0.02)";
+    });
+
     // Create Room
     document.getElementById("create-room").addEventListener("click", () => {
       const roomId = crypto.randomUUID();

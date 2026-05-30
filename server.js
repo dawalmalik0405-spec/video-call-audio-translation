@@ -126,6 +126,10 @@ io.on("connection", (socket) => {
     socket.to(roomId).emit("icecandidate", candidate);
   });
 
+  socket.on("chat-message", ({ roomId, username, text }) => {
+    io.to(roomId).emit("chat-message", { username, text });
+  });
+
 
   socket.on("disconnect", () => {
     for (const roomId in rooms) {

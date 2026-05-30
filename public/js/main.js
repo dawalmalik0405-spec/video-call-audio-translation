@@ -1,6 +1,11 @@
-const createUserBtn = document.getElementById("create-user");
-const usernameInput = document.getElementById("username");
-const username = usernameInput || { value: "User_" + Math.floor(Math.random()*1000) };
+// Extract name from query parameter or sessionStorage
+const urlParams = new URLSearchParams(window.location.search);
+let queryName = urlParams.get('name') || urlParams.get('username') || "";
+if (queryName) {
+  sessionStorage.setItem('username', queryName.trim());
+}
+
+const username = { value: sessionStorage.getItem('username') || "" };
 const allusersHtml = document.getElementById("allusers");
 const localVideo = document.getElementById("localVideo");
 const remoteVideo = document.getElementById("remoteVideo");
@@ -39,6 +44,38 @@ if (!subtitleEl) {
 }
 // ---------------------------------------------
 
+// ---- Helper to append formatted chat and transcript messages ----
+const appendChatMsg = (sender, text, isSelf = false, isTranslation = false, originalText = "") => {
+  if (!transcriptLog) return;
+  const logEntry = document.createElement("div");
+  logEntry.className = `chat-msg ${isSelf ? 'is-self' : ''}`;
+  
+  if (isTranslation) {
+    logEntry.innerHTML = `
+      <div class="msg-header">
+        <span class="sender">${sender} (AI Translated)</span>
+      </div>
+      <div class="msg-bubble is-translated">
+        ${originalText ? `<div class="msg-original">"${originalText}"</div>` : ''}
+        <div>${text}</div>
+      </div>
+    `;
+  } else {
+    logEntry.innerHTML = `
+      <div class="msg-header">
+        <span class="sender">${isSelf ? 'You' : sender}</span>
+      </div>
+      <div class="msg-bubble">
+        <div>${text}</div>
+      </div>
+    `;
+  }
+  
+  transcriptLog.appendChild(logEntry);
+  transcriptLog.scrollTop = transcriptLog.scrollHeight;
+};
+// ------------------------------------------------------------------
+
 socket.on("translation", (payload) => {
   try {
     // ✅ Show only if translation belongs to someone else
@@ -51,19 +88,7 @@ socket.on("translation", (payload) => {
         }, 4000);
 
         // Add to transcript log
-        if (transcriptLog) {
-          const logEntry = document.createElement("div");
-          logEntry.className = "chat-msg";
-          logEntry.innerHTML = `
-            <div class="msg-header"><span class="sender">${payload.username || "Remote"}</span></div>
-            <div class="msg-bubble is-translated">
-              ${payload.original_text ? `<div class="msg-original">"${payload.original_text}"</div>` : ''}
-              <div>${payload.text}</div>
-            </div>
-          `;
-          transcriptLog.appendChild(logEntry);
-          transcriptLog.scrollTop = transcriptLog.scrollHeight;
-        }
+        appendChatMsg(payload.username || "Remote", payload.text, false, true, payload.original_text);
       }
 
       if (payload.audio_b64) {
@@ -140,30 +165,77 @@ const PeerConnection = (function () {
   };
 })();
 
-// handle browser events
-if (createUserBtn && usernameInput) {
-  createUserBtn.addEventListener("click", (e) => {
-    if (username.value !== "") {
-      const usernameContainer = document.querySelector(".username-input");
-      const roomId = window.location.pathname.split("/").pop() || "default";
-      socket.emit("join-room", { roomId, username: username.value });
-      if (usernameContainer) usernameContainer.style.display = "none";
-      startMicStreaming(roomId);
-    }
-  });
+// Join Meeting Room Function
+const joinMeetingRoom = () => {
+  const roomId = window.location.pathname.split("/").pop() || "default";
+  
+  // Set header display name
+  const headerUsernameEl = document.getElementById("header-username");
+  if (headerUsernameEl) {
+    headerUsernameEl.textContent = username.value;
+  }
+  
+  // Update local video thumb label
+  const localLabel = document.querySelector(".thumbnail.local-thumb .thumb-label");
+  if (localLabel) {
+    localLabel.textContent = `${username.value} (You)`;
+  }
+
+  socket.emit("join-room", { roomId, username: username.value });
+  startMicStreaming(roomId);
+};
+
+// Check username availability and trigger modal if missing
+const modalEl = document.getElementById("username-modal");
+const modalInput = document.getElementById("username-modal-input");
+const modalSubmitBtn = document.getElementById("username-modal-submit");
+
+if (!username.value) {
+  if (modalEl) {
+    modalEl.style.display = "flex";
+    modalInput.focus();
+    
+    const handleModalSubmit = () => {
+      const enteredName = modalInput.value.trim();
+      if (enteredName) {
+        username.value = enteredName;
+        sessionStorage.setItem("username", enteredName);
+        modalEl.style.display = "none";
+        joinMeetingRoom();
+      } else {
+        modalInput.style.borderColor = "var(--danger)";
+        modalInput.placeholder = "Name cannot be empty!";
+      }
+    };
+
+    modalSubmitBtn.addEventListener("click", handleModalSubmit);
+    modalInput.addEventListener("keypress", (e) => {
+      if (e.key === "Enter") handleModalSubmit();
+    });
+  } else {
+    // fallback if no modal in HTML
+    username.value = "User_" + Math.floor(Math.random()*1000);
+    joinMeetingRoom();
+  }
 } else {
-  // Auto-join if no username input exists in the new UI
-  setTimeout(() => {
-    const roomId = window.location.pathname.split("/").pop() || "default";
-    socket.emit("join-room", { roomId, username: username.value });
-    startMicStreaming(roomId);
-  }, 1000);
+  // auto-join
+  joinMeetingRoom();
 }
+
 if (endCallBtn) {
   endCallBtn.addEventListener("click", (e) => {
-  const roomId = window.location.pathname.split("/").pop() || "default";
-  socket.emit("call-ended", { roomId, caller });
-});
+    const roomId = window.location.pathname.split("/").pop() || "default";
+    socket.emit("call-ended", { roomId, caller });
+  });
+}
+
+const disconnectHeaderBtn = document.getElementById("disconnect-header-btn");
+if (disconnectHeaderBtn) {
+  disconnectHeaderBtn.addEventListener("click", () => {
+    const roomId = window.location.pathname.split("/").pop() || "default";
+    socket.emit("call-ended", { roomId, caller });
+    window.location.href = "/";
+  });
 }
 
 if (muteAudioBtn) {
@@ -198,30 +270,61 @@ socket.on("joined", (allusers) => {
   const createUsersHtml = () => {
     allusersHtml.innerHTML = "";
 
+    let bgIndex = 0;
     for (const user in allusers) {
+      // Don't show ourselves in the remote participants list since we have the large local video thumb
+      if (user === username.value) continue;
+
       const li = document.createElement("li");
-      li.textContent = `${user} ${user === username.value ? "(You)" : ""}`;
+      li.className = "user-card";
 
-      if (user !== username.value) {
-        const button = document.createElement("button");
-        button.classList.add("call-btn");
-        button.addEventListener("click", (e) => {
-          startCall(user);
-        });
-        const img = document.createElement("img");
-        img.setAttribute("src", "/images/phone.jpeg");
-        img.setAttribute("width", 20);
+      const firstLetter = user.charAt(0).toUpperCase() || "?";
+      const bgClass = `bg-${(bgIndex % 5) + 1}`;
+      bgIndex++;
 
-        button.appendChild(img);
+      // Create card structure
+      li.innerHTML = `
+        <div class="user-avatar ${bgClass}">${firstLetter}</div>
+        <div class="user-info">
+          <div class="user-name">${user}</div>
+          <div class="user-status">Online</div>
+        </div>
+      `;
 
-        li.appendChild(button);
-      }
+      // Premium Call button
+      const button = document.createElement("button");
+      button.classList.add("call-btn-premium");
+      button.title = `Call ${user}`;
+      button.addEventListener("click", (e) => {
+        startCall(user);
+      });
+      
+      // Inline beautiful SVG phone icon
+      button.innerHTML = `
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2.5">
+          <path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92z"/>
+        </svg>
+      `;
 
+      li.appendChild(button);
       allusersHtml.appendChild(li);
     }
   };
 
   createUsersHtml();
+
+  // Dynamic date and user count header update
+  const userCount = Object.keys(allusers).length;
+  const headerSubtitleEl = document.getElementById("header-subtitle-info");
+  if (headerSubtitleEl) {
+    const today = new Date();
+    const formattedDate = today.toLocaleDateString("en-US", {
+      day: "numeric",
+      month: "long",
+      year: "numeric"
+    });
+    headerSubtitleEl.textContent = `${formattedDate} | ${userCount} user${userCount !== 1 ? 's' : ''}`;
+  }
 });
 socket.on("offer", async ({ from, to, offer,roomId }) => {
   const pc = PeerConnection.getInstance();
@@ -416,4 +519,85 @@ async function startMicStreaming(roomId) {
   } catch (err) {
     console.error("❌ Failed to start mic streaming:", err);
   }
+}
+
+// ==================================================================
+// DYNAMIC MEET INTERACTIONS (Chat sidebar, tabs, timer, stats)
+// ==================================================================
+
+// 1. Dynamic Meeting Timer (00:00:00 -> Upwards count)
+const callTimerEl = document.getElementById("call-timer");
+if (callTimerEl) {
+  callTimerEl.textContent = "00:00:00";
+  let seconds = 0;
+  setInterval(() => {
+    seconds++;
+    const hrs = String(Math.floor(seconds / 3600)).padStart(2, "0");
+    const mins = String(Math.floor((seconds % 3600) / 60)).padStart(2, "0");
+    const secs = String(seconds % 60).padStart(2, "0");
+    callTimerEl.textContent = `${hrs}:${mins}:${secs}`;
+  }, 1000);
+}
+
+// 2. Chat Sidebar toggle (using cross and left navigation links)
+const rightSidebar = document.querySelector(".right-sidebar");
+const closeChatBtn = document.getElementById("close-chat-btn");
+
+if (closeChatBtn && rightSidebar) {
+  closeChatBtn.addEventListener("click", () => {
+    rightSidebar.style.display = "none";
+  });
+}
+
+// Toggle Chat Sidebar when clicking Chat button in bottom controls
+const toggleChatBtn = document.getElementById("toggle-chat-btn");
+if (toggleChatBtn && rightSidebar) {
+  toggleChatBtn.addEventListener("click", () => {
+    if (rightSidebar.style.display === "none") {
+      rightSidebar.style.display = "flex";
+    } else {
+      rightSidebar.style.display = "none";
+    }
+  });
+}
+
+// 3. Dynamic chat message sending
+const chatInput = document.getElementById("chat-input");
+const sendChatBtn = document.getElementById("send-chat-btn");
+
+const sendTextMessage = () => {
+  if (!chatInput) return;
+  const text = chatInput.value.trim();
+  if (text) {
+    const roomId = window.location.pathname.split("/").pop() || "default";
+    socket.emit("chat-message", { roomId, username: username.value, text });
+    chatInput.value = "";
+  }
+};
+
+if (sendChatBtn && chatInput) {
+  sendChatBtn.addEventListener("click", sendTextMessage);
+  chatInput.addEventListener("keypress", (e) => {
+    if (e.key === "Enter") sendTextMessage();
+  });
+}
+
+// Listen for broadcasted chat messages
+socket.on("chat-message", ({ username: msgUser, text }) => {
+  appendChatMsg(msgUser, text, msgUser === username.value, false);
+});
+
+// 4. Tab switching inside chat sidebar
+const tabAll = document.getElementById("tab-all");
+const tabPrivate = document.getElementById("tab-private");
+
+if (tabAll && tabPrivate) {
+  tabAll.addEventListener("click", () => {
+    tabPrivate.classList.remove("active");
+    tabAll.classList.add("active");
+  });
+  tabPrivate.addEventListener("click", () => {
+    tabAll.classList.remove("active");
+    tabPrivate.classList.add("active");
+  });
 }

@@ -1,0 +1,27 @@
+# Python
+venv/
+__pycache__/
+*.pyc
+
+# Node
+node_modules/
+
+# Certificates
+*.pem
+*.key
+
+# Ngrok
+ngrok.exe
+ngrok_log.txt
+
+# Mkcert
+mkcert.exe
+
+# Environment
+.env
+
+# Build outputs
+dist/
+build/
+
+models/

@@ -13,25 +13,23 @@
 </head>
 
 <body>
-  <div class="app-layout">
-
-    <!-- ========== LEFT SIDEBAR ========== -->
-    <aside class="sidebar-menu">
-      <div class="sidebar-brand">
+  <!-- Modern Display Name Overlay Modal -->
+  <div id="username-modal" class="modal-overlay" style="display: none;">
+    <div class="modal-card">
+      <div class="modal-brand">
         <span class="brand-dot"></span>
-        <span class="brand-name">Settings</span>
+        <h2>TranslateMeet</h2>
       </div>
-      <nav>
-        <ul class="sidebar-links">
-          <li><a href="#" class="sidebar-link active">Rooms</a></li>
-          <li><a href="#" class="sidebar-link">Activity Channel</a></li>
-          <li><a href="#" class="sidebar-link">Support</a></li>
-          <li><a href="#" class="sidebar-link">Messages</a></li>
-          <li><a href="#" class="sidebar-link">Chat</a></li>
-          <li><a href="#" class="sidebar-link">Settings</a></li>
-        </ul>
-      </nav>
-    </aside>
+      <h3>Join the Meeting</h3>
+      <p>Enter your display name to connect to this live translation room.</p>
+      <div class="modal-input-wrapper">
+        <input type="text" id="username-modal-input" placeholder="Your Display Name" autocomplete="off" />
+      </div>
+      <button id="username-modal-submit" class="modal-btn">Join Meeting</button>
+    </div>
+  </div>
+
+  <div class="app-layout">
 
     <!-- ========== MAIN CONTENT ========== -->
     <div class="main-content">
@@ -46,7 +44,7 @@
           </button>
           <div class="header-title">
             <h1 id="meeting-id-display">Loading room...</h1>
-            <span class="header-subtitle">13 December, 2023 | 2 users</span>
+            <span id="header-subtitle-info" class="header-subtitle">Loading...</span>
           </div>
         </div>
 
@@ -57,31 +55,6 @@
             <span id="call-timer">01:43:32</span>
           </div>
 
-          <!-- Action icon buttons -->
-          <div class="header-actions">
-            <!-- Phone icon -->
-            <button class="action-btn blue-btn" title="Call">
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2">
-                <path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92z"/>
-              </svg>
-            </button>
-            <!-- Users icon -->
-            <button class="action-btn blue-btn" title="Participants">
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2">
-                <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/>
-                <circle cx="9" cy="7" r="4"/>
-                <path d="M23 21v-2a4 4 0 0 0-3-3.87"/>
-                <path d="M16 3.13a4 4 0 0 1 0 7.75"/>
-              </svg>
-            </button>
-            <!-- Bell icon -->
-            <button class="action-btn blue-btn" title="Notifications">
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2">
-                <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/>
-                <path d="M13.73 21a2 2 0 0 1-3.46 0"/>
-              </svg>
-            </button>
-          </div>
 
           <!-- Username + Disconnect -->
           <div class="user-pill">
@@ -129,9 +102,9 @@
           <div class="overlay-controls">
             <button id="mute-audio-btn" class="control-btn dark-circle" title="Mute">🎙️</button>
             <button id="mute-video-btn" class="control-btn dark-circle" title="Camera">📷</button>
+            <button id="toggle-chat-btn" class="control-btn dark-circle" title="Chat">💬</button>
             <button class="control-btn dark-circle" title="Emoji">😊</button>
             <button class="control-btn dark-circle" title="Timer">🕑</button>
-            <button class="control-btn dark-circle" title="More">⋮</button>
             <!-- Red end-call button — always visible in control bar -->
             <button id="end-call-btn" class="control-btn end-call-circle" title="End call">
               <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2.5">
@@ -173,8 +146,8 @@
       <div id="transcript-log" class="chat-messages"></div>
 
       <div class="chat-input-area">
-        <input type="text" placeholder="Type a message..." disabled title="Transcripts appear here automatically" />
-        <button class="send-btn">
+        <input type="text" id="chat-input" placeholder="Type a message..." autocomplete="off" />
+        <button class="send-btn" id="send-chat-btn">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2">
             <path d="M22 2L11 13"/>
             <path d="M22 2l-7 20-4-9-9-4 20-7z"/>
