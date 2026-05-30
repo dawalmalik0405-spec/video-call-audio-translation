@@ -342,9 +342,12 @@ button {
   border-radius: var(--radius-lg);
   margin: 16px 16px 16px 0;
   box-shadow: var(--shadow-md);
-  display: flex;
+  display: none;
   flex-direction: column;
   flex-shrink: 0;
+}
+.right-sidebar.active {
+  display: flex;
 }
 
 .chat-header {

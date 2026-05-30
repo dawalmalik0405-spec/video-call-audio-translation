@@ -238,6 +238,26 @@ if (disconnectHeaderBtn) {
   });
 }
 
+const copyCodeBtn = document.getElementById("copy-code-btn");
+if (copyCodeBtn) {
+  copyCodeBtn.addEventListener("click", async () => {
+    const roomId = window.location.pathname.split("/").pop() || "default";
+    try {
+      await navigator.clipboard.writeText(roomId);
+      const originalTitle = copyCodeBtn.title;
+      copyCodeBtn.title = "Copied!";
+      const icon = copyCodeBtn.innerHTML;
+      copyCodeBtn.innerHTML = `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#10b981" stroke-width="2"><path d="M20 6L9 17l-5-5"/></svg>`;
+      setTimeout(() => {
+        copyCodeBtn.title = originalTitle;
+        copyCodeBtn.innerHTML = icon;
+      }, 2000);
+    } catch (err) {
+      console.error("Failed to copy:", err);
+    }
+  });
+}
+
 if (muteAudioBtn) {
   muteAudioBtn.addEventListener("click", () => {
     if (localStream) {
@@ -474,11 +494,17 @@ startMyVideo();
 
 async function startMicStreaming(roomId) {
   try {
-    const micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
-
-    // ✅ Force 16kHz to match Python
+    // We can use the already captured localStream if available, or request anew.
+    // For translation, we need 16kHz. MediaDevices might provide 48kHz by default, 
+    // but AudioContext with sampleRate: 16000 will automatically resample it!
     const audioContext = new AudioContext({ sampleRate: 16000 });
-    const source = audioContext.createMediaStreamSource(micStream);
+    
+    // Wait for localStream to be available
+    while (!localStream) {
+      await new Promise(r => setTimeout(r, 100));
+    }
+    
+    const source = audioContext.createMediaStreamSource(localStream);
 
     // ✅ Larger buffer (~1 sec chunks)
     const processor = audioContext.createScriptProcessor(4096, 1, 1);
@@ -487,6 +513,13 @@ async function startMicStreaming(roomId) {
     processor.connect(audioContext.destination);
 
     processor.onaudioprocess = (e) => {
+      // 1. Check if the microphone is explicitly enabled (not muted)
+      const audioTrack = localStream.getAudioTracks()[0];
+      if (!audioTrack || !audioTrack.enabled) return;
+
+      // 2. Check if another user is connected to the video call
+      if (!remoteVideo.srcObject || !remoteVideo.srcObject.active) return;
+
       const inputData = e.inputBuffer.getChannelData(0);
 
       // Float32 → Int16
@@ -506,13 +539,6 @@ async function startMicStreaming(roomId) {
 
       // ✅ Send to backend
       socket.emit("audio-chunk", { roomId, audio_b64, src, tgt, username: username.value });
-
-      console.log("🎙️ Sent chunk", {
-        src,
-        tgt,
-        samples: inputData.length,
-        bytes: audio_b64.length,
-      });
     };
 
     console.log("🎙️ Microphone streaming started (16kHz, buffer=16384)");
@@ -545,7 +571,7 @@ const closeChatBtn = document.getElementById("close-chat-btn");
 
 if (closeChatBtn && rightSidebar) {
   closeChatBtn.addEventListener("click", () => {
-    rightSidebar.style.display = "none";
+    rightSidebar.classList.remove("active");
   });
 }
 
@@ -553,11 +579,7 @@ if (closeChatBtn && rightSidebar) {
 const toggleChatBtn = document.getElementById("toggle-chat-btn");
 if (toggleChatBtn && rightSidebar) {
   toggleChatBtn.addEventListener("click", () => {
-    if (rightSidebar.style.display === "none") {
-      rightSidebar.style.display = "flex";
-    } else {
-      rightSidebar.style.display = "none";
-    }
+    rightSidebar.classList.toggle("active");
   });
 }
 
