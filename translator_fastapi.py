@@ -215,17 +215,21 @@ async def startup_event():
     # Helper to free port 8765 if already in use by a zombie Node process
     def _kill_port(port):
         try:
-            output = subprocess.check_output(['netstat', '-ano'], text=True)
-            for line in output.splitlines():
-                if f':{port}' in line:
-                    parts = line.split()
-                    if len(parts) >= 5:
-                        pid = parts[-1]
-                        try:
-                            subprocess.run(['taskkill', '/F', '/PID', pid], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                            print(f"[Port cleanup] Killed PID {pid} on port {port}")
-                        except Exception as e:
-                            pass
+            if os.name == 'nt':
+                output = subprocess.check_output(['netstat', '-ano'], text=True)
+                for line in output.splitlines():
+                    if f':{port}' in line:
+                        parts = line.split()
+                        if len(parts) >= 5:
+                            pid = parts[-1]
+                            try:
+                                subprocess.run(['taskkill', '/F', '/PID', pid], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                                print(f"[Port cleanup] Killed PID {pid} on port {port}")
+                            except Exception:
+                                pass
+            else:
+                subprocess.run(['fuser', '-k', f'{port}/tcp'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                print(f"[Port cleanup] Killed processes on port {port}")
         except Exception:
             pass
             
@@ -233,15 +237,22 @@ async def startup_event():
     _kill_port(9000)
     
     print("🚀 Starting Node.js server...")
+    npm_cmd = "npm.cmd" if os.name == 'nt' else "npm"
+    kwargs = {}
+    if os.name == 'nt':
+        kwargs['creationflags'] = 0x00000200
+    else:
+        kwargs['preexec_fn'] = os.setsid
+        
     proc = subprocess.Popen(
-        ["npm.cmd", "run", "start"],
+        [npm_cmd, "run", "start"],
         cwd=project_root,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
-        creationflags=0x00000200,
         text=True,
         encoding='utf-8',
         errors='replace',
+        **kwargs
     )
     app.state.node_process = proc
 
@@ -266,7 +277,10 @@ async def stop_node():
     if proc and proc.poll() is None:
         print("🛑 Stopping Node.js server...")
         try:
-            proc.send_signal(signal.CTRL_BREAK_EVENT)
+            if os.name == 'nt':
+                proc.send_signal(signal.CTRL_BREAK_EVENT)
+            else:
+                os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
         except Exception:
             proc.terminate()
         try:

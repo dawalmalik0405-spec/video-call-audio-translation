@@ -2,3 +2,7 @@ fastapi==0.115.0
 uvicorn[standard]==0.30.6
 python-socketio==5.11.4
 websockets==13.1
+webrtcvad==2.0.10
+deep-translator==1.11.4
+gTTS==2.5.1
+SpeechRecognition==3.10.4
