@@ -609,17 +609,4 @@ socket.on("chat-message", ({ username: msgUser, text }) => {
   appendChatMsg(msgUser, text, msgUser === username.value, false);
 });
 
-// 4. Tab switching inside chat sidebar
-const tabAll = document.getElementById("tab-all");
-const tabPrivate = document.getElementById("tab-private");
 
-if (tabAll && tabPrivate) {
-  tabAll.addEventListener("click", () => {
-    tabPrivate.classList.remove("active");
-    tabAll.classList.add("active");
-  });
-  tabPrivate.addEventListener("click", () => {
-    tabAll.classList.remove("active");
-    tabPrivate.classList.add("active");
-  });
-}
