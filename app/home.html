@@ -127,7 +127,6 @@
     const joinRoom = () => {
       const code = codeInput.value.trim();
       if (code) {
-        // Strip out the base URL if the user pastes a full link
         let roomId = code;
         try {
           const url = new URL(code);
