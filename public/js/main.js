@@ -76,10 +76,90 @@ const appendChatMsg = (sender, text, isSelf = false, isTranslation = false, orig
 };
 // ------------------------------------------------------------------
 
+// ---- Instant Web Speech API (0ms Native TTS) ----
+const hasSpeechSynthesis = typeof window !== "undefined" && "speechSynthesis" in window;
+let availableVoices = [];
+
+const refreshVoices = () => {
+  if (hasSpeechSynthesis) {
+    availableVoices = window.speechSynthesis.getVoices() || [];
+  }
+};
+
+if (hasSpeechSynthesis) {
+  refreshVoices();
+  window.speechSynthesis.onvoiceschanged = refreshVoices;
+}
+
+const LANG_CODE_MAP = {
+  "en": "en-US",
+  "hi": "hi-IN",
+  "de": "de-DE",
+  "zh": "zh-CN",
+  "zh-cn": "zh-CN",
+  "zh-CN": "zh-CN",
+  "es": "es-ES",
+  "fr": "fr-FR",
+  "ja": "ja-JP"
+};
+
+const spokenPhraseIds = new Set();
+
+function speakNative(text, lang) {
+  if (!hasSpeechSynthesis || !text) return false;
+  try {
+    const targetLang = LANG_CODE_MAP[lang] || lang || "en-US";
+    const utterance = new SpeechSynthesisUtterance(text);
+    utterance.lang = targetLang;
+    utterance.rate = 1.05; // Slightly faster for natural conversational flow
+    utterance.pitch = 1.0;
+
+    if (availableVoices.length > 0) {
+      const match = availableVoices.find(v => v.lang.toLowerCase() === targetLang.toLowerCase()) ||
+                    availableVoices.find(v => v.lang.toLowerCase().startsWith(targetLang.split("-")[0].toLowerCase()));
+      if (match) utterance.voice = match;
+    }
+
+    window.speechSynthesis.speak(utterance);
+    return true;
+  } catch (err) {
+    console.warn("Native SpeechSynthesis error, falling back to server TTS:", err);
+    return false;
+  }
+}
+
+// ---- Smooth Audio Playback Queue (Fallback) ----
+const audioQueue = [];
+let isAudioPlaying = false;
+
+function playNextAudio() {
+  if (isAudioPlaying || audioQueue.length === 0) return;
+  isAudioPlaying = true;
+  const blob = audioQueue.shift();
+  const url = URL.createObjectURL(blob);
+  const audio = new Audio(url);
+  
+  const finish = () => {
+    URL.revokeObjectURL(url);
+    isAudioPlaying = false;
+    playNextAudio();
+  };
+
+  audio.onended = finish;
+  audio.onerror = finish;
+  audio.play().catch((e) => {
+    console.warn("Auto-play blocked or audio error", e);
+    finish();
+  });
+}
+
 socket.on("translation", (payload) => {
   try {
-    // ✅ Show only if translation belongs to someone else
+    // Show only if translation belongs to someone else
     if (payload.username && payload.username !== username.value) {
+      const phraseKey = `${payload.username}_${payload.timestamp || payload.text}`;
+
+      // ⚡ Immediate Subtitle Display & 0ms Native Voice Playback
       if (payload.text) {
         subtitleEl.innerText = payload.text;
         clearTimeout(subtitleEl._clearT);
@@ -89,23 +169,29 @@ socket.on("translation", (payload) => {
 
         // Add to transcript log
         appendChatMsg(payload.username || "Remote", payload.text, false, true, payload.original_text);
+
+        // 🚀 Instant voice synthesis directly on device (0ms network delay)
+        const spoke = speakNative(payload.text, payload.tgt || "en");
+        if (spoke) {
+          spokenPhraseIds.add(phraseKey);
+          if (spokenPhraseIds.size > 50) {
+            const first = spokenPhraseIds.values().next().value;
+            spokenPhraseIds.delete(first);
+          }
+        }
       }
 
+      // 🔊 Server Audio Fallback (plays if native TTS was unavailable)
       if (payload.audio_b64) {
-        const binary = atob(payload.audio_b64);
-        const len = binary.length;
-        const bytes = new Uint8Array(len);
-        for (let i = 0; i < len; i++) bytes[i] = binary.charCodeAt(i);
-        const blob = new Blob([bytes.buffer], { type: "audio/mpeg" });
-        const url = URL.createObjectURL(blob);
-        const a = new Audio(url);
-        a.play().catch((e) => {
-          console.warn(
-            "Auto-play blocked, user gesture required to play audio",
-            e
-          );
-        });
-        a.onended = () => URL.revokeObjectURL(url);
+        if (!spokenPhraseIds.has(phraseKey)) {
+          const binary = atob(payload.audio_b64);
+          const len = binary.length;
+          const bytes = new Uint8Array(len);
+          for (let i = 0; i < len; i++) bytes[i] = binary.charCodeAt(i);
+          const blob = new Blob([bytes.buffer], { type: "audio/mpeg" });
+          audioQueue.push(blob);
+          playNextAudio();
+        }
       }
     }
   } catch (e) {
@@ -116,6 +202,20 @@ socket.on("translation", (payload) => {
 let localStream;
 let caller = [];
 
+// ICE candidates queue to prevent adding candidates before remote description is set
+const iceCandidatesQueue = [];
+
+async function drainIceCandidates(pc) {
+  while (iceCandidatesQueue.length > 0) {
+    const cand = iceCandidatesQueue.shift();
+    try {
+      await pc.addIceCandidate(new RTCIceCandidate(cand));
+    } catch (e) {
+      console.warn("Failed to add queued ICE candidate:", e);
+    }
+  }
+}
+
 // Single Method for peer connection
 const PeerConnection = (function () {
   let peerConnection;
@@ -123,27 +223,36 @@ const PeerConnection = (function () {
   const createPeerConnection = () => {
     const config = {
       iceServers: [
-        {
-          urls: "stun:stun.l.google.com:19302",
-        },
+        { urls: "stun:stun.l.google.com:19302" },
+        { urls: "stun:stun1.l.google.com:19302" },
+        { urls: "stun:stun2.l.google.com:19302" },
+        { urls: "stun:stun.services.mozilla.com" },
+        { urls: "stun:global.stun.twilio.com:3478" }
       ],
     };
     peerConnection = new RTCPeerConnection(config);
 
-    // add local stream to peer connection
-    localStream.getTracks().forEach((track) => {
-      peerConnection.addTrack(track, localStream);
-    });
-    // listen to remote stream and add to peer connection
+    // add local stream tracks to peer connection
+    if (localStream) {
+      localStream.getTracks().forEach((track) => {
+        peerConnection.addTrack(track, localStream);
+      });
+    }
+
+    // listen to remote stream and attach to video element
     peerConnection.ontrack = function (event) {
-      remoteVideo.srcObject = event.streams[0];
+      console.log("📺 Remote video track received:", event.streams[0]);
+      if (remoteVideo) {
+        remoteVideo.srcObject = event.streams[0];
+        remoteVideo.play().catch(e => console.warn("Remote video auto-play blocked:", e));
+      }
     };
-    // listen for ice candidate
+
     // ICE candidates
     peerConnection.onicecandidate = function (event) {
       if (event.candidate) {
-        const roomId = window.location.pathname.split("/").pop() || "default"; // ✅ add
-        socket.emit("icecandidate", { roomId, candidate: event.candidate });   // ✅ include roomId
+        const roomId = window.location.pathname.split("/").pop() || "default";
+        socket.emit("icecandidate", { roomId, candidate: event.candidate });
       }
     };
     return peerConnection;
@@ -346,50 +455,83 @@ socket.on("joined", (allusers) => {
     headerSubtitleEl.textContent = `${formattedDate} | ${userCount} user${userCount !== 1 ? 's' : ''}`;
   }
 });
-socket.on("offer", async ({ from, to, offer,roomId }) => {
-  const pc = PeerConnection.getInstance();
-  // set remote description
-  await pc.setRemoteDescription(offer);
-  const answer = await pc.createAnswer();
-  await pc.setLocalDescription(answer);
-  socket.emit("answer", { roomId, from, to, answer: pc.localDescription });
-  caller = [from, to];
+socket.on("offer", async ({ from, to, offer, roomId }) => {
+  try {
+    const pc = PeerConnection.getInstance();
+    await pc.setRemoteDescription(new RTCSessionDescription(offer));
+    await drainIceCandidates(pc);
+    const answer = await pc.createAnswer();
+    await pc.setLocalDescription(answer);
+    socket.emit("answer", { roomId, from, to, answer: pc.localDescription });
+    caller = [from, to];
+    if (endCallBtn) endCallBtn.style.display = "block";
+  } catch (err) {
+    console.error("Error handling WebRTC offer:", err);
+  }
 });
+
 socket.on("answer", async ({ from, to, answer }) => {
-  const pc = PeerConnection.getInstance();
-  await pc.setRemoteDescription(answer);
-  // show end call button
-  endCallBtn.style.display = "block";
-  // socket.emit("end-call", { from, to });
-  caller = [from, to];
+  try {
+    const pc = PeerConnection.getInstance();
+    await pc.setRemoteDescription(new RTCSessionDescription(answer));
+    await drainIceCandidates(pc);
+    if (endCallBtn) endCallBtn.style.display = "block";
+    caller = [from, to];
+  } catch (err) {
+    console.error("Error handling WebRTC answer:", err);
+  }
 });
+
 socket.on("icecandidate", async (candidate) => {
-  console.log({ candidate });
   const pc = PeerConnection.getInstance();
-  await pc.addIceCandidate(new RTCIceCandidate(candidate));
+  if (pc && pc.remoteDescription && pc.remoteDescription.type) {
+    try {
+      await pc.addIceCandidate(new RTCIceCandidate(candidate));
+    } catch (e) {
+      console.warn("Failed to add ICE candidate:", e);
+    }
+  } else {
+    iceCandidatesQueue.push(candidate);
+  }
 });
+
 socket.on("end-call", ({ from, to }) => {
-  endCallBtn.style.display = "block";
+  if (endCallBtn) endCallBtn.style.display = "block";
 });
+
 socket.on("call-ended", (caller) => {
   endCall();
 });
 
 // start call method
 const startCall = async (user) => {
-  console.log({ user });
-  const pc = PeerConnection.getInstance();
-  const offer = await pc.createOffer();
-  console.log({ offer });
-  await pc.setLocalDescription(offer);
+  try {
+    console.log("📞 Starting call to:", user);
+    const pc = PeerConnection.getInstance();
 
-  const roomId = window.location.pathname.split("/").pop() || "default";
-  socket.emit("offer", {
-    roomId,
-    from: username.value,
-    to: user,
-    offer: pc.localDescription,
-  });
+    // Ensure tracks are attached
+    if (localStream) {
+      const senders = pc.getSenders ? pc.getSenders() : [];
+      localStream.getTracks().forEach((track) => {
+        if (!senders.some(s => s.track === track)) {
+          pc.addTrack(track, localStream);
+        }
+      });
+    }
+
+    const offer = await pc.createOffer();
+    await pc.setLocalDescription(offer);
+
+    const roomId = window.location.pathname.split("/").pop() || "default";
+    socket.emit("offer", {
+      roomId,
+      from: username.value,
+      to: user,
+      offer: pc.localDescription,
+    });
+  } catch (err) {
+    console.error("Error starting call:", err);
+  }
 };
 
 const endCall = () => {
@@ -506,11 +648,13 @@ async function startMicStreaming(roomId) {
     
     const source = audioContext.createMediaStreamSource(localStream);
 
-    // ✅ Larger buffer (~1 sec chunks)
-    const processor = audioContext.createScriptProcessor(4096, 1, 1);
-
+    // ⚡ Optimized low-latency buffer (2048 samples @ 16kHz = 128ms chunks)
+    const processor = audioContext.createScriptProcessor(2048, 1, 1);
+    const silentGain = audioContext.createGain();
+    silentGain.gain.value = 0; // Prevent local mic audio from looping back to speakers
     source.connect(processor);
-    processor.connect(audioContext.destination);
+    processor.connect(silentGain);
+    silentGain.connect(audioContext.destination);
 
     processor.onaudioprocess = (e) => {
       // 1. Check if the microphone is explicitly enabled (not muted)
