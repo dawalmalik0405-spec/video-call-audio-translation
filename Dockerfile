@@ -29,8 +29,11 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy the rest of the application code
 COPY . .
 
-# Start the FastAPI app on an internal port (8000).
-# The FastAPI startup script will automatically launch the Node.js server.
-# Render automatically injects a $PORT environment variable, which the Node.js
-# server (server.js) reads and binds to, allowing it to receive public traffic.
+# Expose Node.js web server & WebRTC signaling (9000) and FastAPI internal service (8000)
+EXPOSE 9000
+EXPOSE 8000
+
+# Start the FastAPI app on internal port (8000).
+# The FastAPI startup event automatically launches the Node.js server (port 9000 or $PORT).
+# For cloud platforms like Render, $PORT is injected and bound by server.js.
 CMD ["uvicorn", "translator_fastapi:app", "--host", "0.0.0.0", "--port", "8000"]

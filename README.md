@@ -45,9 +45,9 @@ You can run this project locally using either Docker (recommended for production
    ```
 2. Run the container:
    ```bash
-   docker run -p 8000:8000 translatemeet
+   docker run -p 9000:9000 translatemeet
    ```
-3. Open your browser and navigate to `http://localhost:8000` (or the port Docker exposed based on your environment).
+3. Open your browser and navigate to `http://localhost:9000`.
 
 ### 💻 Option 2: Local Development Setup
 1. **Install Node Dependencies:**
