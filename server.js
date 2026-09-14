@@ -29,28 +29,7 @@ app.get("/room/:roomId", (req, res) => {
 const httpServer = http.createServer(app);
 const io = new Server(httpServer, { cors: { origin: "*" } });
 
-// ... (rest of the file unchanged)
 
-// app.get("/", (req, res) => {
-//   console.log("GET Request /");
-//   res.sendFile(join(__dirname + "/app/index.html"));
-// });
-
-
-// Home page (create meeting)
-app.get("/", (req, res) => {
-  res.sendFile(join(__dirname, "app/home.html"));
-});
-
-// Meeting page (join room)
-app.get("/room/:roomId", (req, res) => {
-  res.sendFile(join(__dirname, "app/index.html"));
-});
-
-
-// -----------------
-// WebRTC signaling
-// -----------------
 io.on("connection", (socket) => {
   console.log(`Socket connected: ${socket.id}`);
 
@@ -100,17 +79,13 @@ io.on("connection", (socket) => {
     }
   });
 
-  socket.on("end-call-btn", ({ roomId, from, to }) => {
-  if (rooms[roomId] && rooms[roomId][to]) {
-    io.to(rooms[roomId][to].id).emit("end-call", { from, to });
-  }
-  });
-
-  socket.on("end-call", ({ roomId, from, to }) => {
-  if (rooms[roomId] && rooms[roomId][to]) {
-    io.to(rooms[roomId][to].id).emit("end-call", { from, to });
-  }
-  });
+  const handleEndCall = ({ roomId, from, to }) => {
+    if (rooms[roomId] && rooms[roomId][to]) {
+      io.to(rooms[roomId][to].id).emit("end-call", { from, to });
+    }
+  };
+  socket.on("end-call-btn", handleEndCall);
+  socket.on("end-call", handleEndCall);
 
   socket.on("call-ended", ({ roomId, caller }) => {
   const [from, to] = caller;
