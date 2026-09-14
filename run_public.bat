@@ -2,18 +2,18 @@
 setlocal enabledelayedexpansion
 
 rem -------------------------------------------------
-rem Clean up any existing ngrok processes (free tier limit of 3 sessions)
+rem Clean up any existing ngrok processes
 rem -------------------------------------------------
 ngrok.exe kill >nul 2>&1 || echo No active ngrok tunnels
 taskkill /F /IM ngrok.exe >nul 2>&1 || echo No existing ngrok processes found
 
 rem -------------------------------------------------
-rem Clean up any stray Node processes (port 8765 may be left bound)
+rem Clean up any stray Node processes (port 8765/9000)
 rem -------------------------------------------------
 taskkill /F /IM node.exe >nul 2>&1 || echo No existing node processes found
 
 rem -------------------------------------------------
-rem 1️⃣ Launch Node UI (detached) on port 9000
+rem 1. Launch Node UI (detached) on port 9000
 rem -------------------------------------------------
 start "" npm run start
 
@@ -23,50 +23,38 @@ rem -------------------------------------------------
 powershell -NoProfile -Command "while(-not (Test-NetConnection -ComputerName localhost -Port 9000 -InformationLevel Quiet)){Start-Sleep -Seconds 1}" >nul 2>&1
 
 rem -------------------------------------------------
-rem 2️⃣ Start a single ngrok tunnel for the UI (port 9000) and capture its URL
+rem 2. Start ngrok tunnel for port 9000
 rem -------------------------------------------------
-rem Start ngrok in background, logging output to a temporary file
-start "" /b cmd /c "ngrok.exe http 9000 ^> ngrok_log.txt 2^>^&1"
+start "" /b ngrok.exe http 9000 --log=ngrok_log.txt
 
 rem -------------------------------------------------
-rem Wait up to 15 seconds for the forwarding line to appear
+rem 3. Fetch public HTTPS URL via ngrok API (with retry loop)
 rem -------------------------------------------------
 set "NGROK_PUBLIC_URL="
-for /L %%i in (1,1,15) do (
-    for /f "tokens=2" %%A in ('type ngrok_log.txt ^| findstr "https://"') do (
-        set "NGROK_PUBLIC_URL=%%A"
-    )
-    if defined NGROK_PUBLIC_URL goto :goturl
-    timeout /t 1 >nul
+for /f "usebackq tokens=*" %%U in (`powershell -NoProfile -Command "$u=''; for ($i=0; $i -lt 15; $i++) { try { $r = Invoke-RestMethod -Uri 'http://127.0.0.1:4040/api/tunnels' -TimeoutSec 1; if ($r.tunnels -and $r.tunnels[0].public_url) { $u = $r.tunnels[0].public_url; break } } catch {}; Start-Sleep -Seconds 1 }; Write-Output $u"`) do (
+    set "NGROK_PUBLIC_URL=%%U"
 )
 
-:goturl
 rem -------------------------------------------------
-rem 3️⃣ Derive the WebSocket URL for FastAPI (same host, ws://)
-rem -------------------------------------------------
-set "NGROK_WS_URL=%NGROK_PUBLIC_URL:http://=ws://%"
-set "NGROK_WS_URL=%NGROK_WS_URL:https://=ws://%"
-
-rem -------------------------------------------------
-rem Show the URLs so you can copy them
+rem 4. Show URLs
 rem -------------------------------------------------
 echo.
-echo ==============================
-echo ngrok tunnel is ready:
-echo UI (HTTPS)   : %NGROK_PUBLIC_URL%
-echo WS (FastAPI) : %NGROK_WS_URL%
-echo ==============================
+echo ==============================================
+echo  TranslateMeet Public Tunnel Ready!
+echo  Public Web UI (HTTPS) : %NGROK_PUBLIC_URL%
+echo  Local Node Server     : http://localhost:9000
+echo  Local FastAPI Server  : http://localhost:8000
+echo ==============================================
 echo.
 
 rem -------------------------------------------------
-rem 4️⃣ Activate the virtual‑env
+rem 5. Activate virtual environment and launch FastAPI
 rem -------------------------------------------------
-call .\.venv\Scripts\Activate.ps1
+if exist ".\.venv\Scripts\activate.bat" (
+    call .\.venv\Scripts\activate.bat
+)
 
-rem -------------------------------------------------
-rem 5️⃣ Launch FastAPI (detached)
-rem -------------------------------------------------
 start "" uvicorn translator_fastapi:app --host 0.0.0.0 --port 8000
 
-rem Keep the script alive so you can see the URLs
+rem Keep the script alive so you can copy the URLs
 pause
