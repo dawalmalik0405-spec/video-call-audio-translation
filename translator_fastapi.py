@@ -3,11 +3,13 @@ import json
 import base64
 import time
 import os
+import io
+import urllib.request
+import urllib.parse
 import webrtcvad
 import websockets
 from deep_translator import GoogleTranslator
 from gtts import gTTS
-from tempfile import NamedTemporaryFile
 import speech_recognition as sr
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.staticfiles import StaticFiles
@@ -15,7 +17,7 @@ from fastapi.responses import FileResponse
 from typing import Dict
 
 # ===================== CONFIG =====================
-WS_URL = os.getenv("NGROK_WS_URL", "ws://localhost:8765")  # Override with ngrok URL (e.g. wss://xxxx.ngrok.io)  # Node.js WebSocket server
+WS_URL = os.getenv("NODE_WS_URL", "ws://127.0.0.1:8765")  # Node.js WebSocket server (local loopback)
 SOURCE_LANG = "en"              # default source
 TARGET_LANG = "hi"              # default target
 SAMPLE_RATE = 16000             # audio sample rate expected from client
@@ -30,7 +32,10 @@ LANG_ALIASES = {
     "hi": "hi", "hindi": "hi",
     "cn": "zh-CN", "zh": "zh-CN", "zh-cn": "zh-CN",
     "zh_cn": "zh-CN", "chinese": "zh-CN",
-    "de": "de", "german": "de"
+    "de": "de", "german": "de",
+    "es": "es", "spanish": "es",
+    "fr": "fr", "french": "fr",
+    "ja": "ja", "japanese": "ja"
 }
 
 def normalize_lang(code: str) -> str:
@@ -38,26 +43,56 @@ def normalize_lang(code: str) -> str:
         return ""
     return LANG_ALIASES.get(code.strip().lower(), code.strip().lower())
 
-# --- Translation / TTS ---
+# --- Direct Google Translate (Bypasses scraper 429 rate limit) ---
+_translators = {}
+
+def direct_google_translate(text: str, src: str, tgt: str) -> str:
+    """Uses Google's open translation API endpoint directly to avoid rate limits"""
+    try:
+        url = f"https://translate.googleapis.com/translate_a/single?client=gtx&sl={src}&tl={tgt}&dt=t&q={urllib.parse.quote(text)}"
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"})
+        with urllib.request.urlopen(req, timeout=5) as response:
+            res = json.loads(response.read().decode("utf-8"))
+            if res and isinstance(res, list) and len(res) > 0 and isinstance(res[0], list):
+                translated_text = "".join([part[0] for part in res[0] if part and len(part) > 0 and part[0]])
+                if translated_text.strip():
+                    return translated_text.strip()
+    except Exception as e:
+        print(f"[Direct Translate Error] {e}")
+    return ""
+
 def translate(text, source_lang=None, target_lang=None):
+    if not text or not text.strip():
+        return ""
     src = normalize_lang(source_lang or SOURCE_LANG)
     tgt = normalize_lang(target_lang or TARGET_LANG)
+    
+    # 1. Try direct Google API first (fastest, no 429 scraper block)
+    res = direct_google_translate(text, src, tgt)
+    if res:
+        return res
+
+    # 2. Fallback to deep-translator
+    key = (src, tgt)
+    if key not in _translators:
+        _translators[key] = GoogleTranslator(source=src, target=tgt)
     try:
-        return GoogleTranslator(source=src, target=tgt).translate(text)
+        return _translators[key].translate(text)
     except Exception as e:
-        print(f"[Translation Error] {e}")
-        return ""
+        print(f"[Translation Fallback Error] {e}")
+        try:
+            _translators[key] = GoogleTranslator(source=src, target=tgt)
+            return _translators[key].translate(text)
+        except Exception:
+            return ""
 
 def tts_mp3_bytes(text, lang=None):
+    """Fast in-memory TTS generation without disk I/O"""
     lng = normalize_lang(lang or TARGET_LANG)
     try:
-        with NamedTemporaryFile(delete=False, suffix=".mp3") as fp:
-            tmp = fp.name
-        gTTS(text=text, lang=lng).save(tmp)
-        with open(tmp, "rb") as f:
-            data = f.read()
-        os.remove(tmp)
-        return data
+        fp = io.BytesIO()
+        gTTS(text=text, lang=lng).write_to_fp(fp)
+        return fp.getvalue()
     except Exception as e:
         print(f"[TTS Error] {e}")
         return b""
@@ -70,11 +105,12 @@ audio_buffers = {}      # username -> bytearray()
 speech_accums = {}      # username -> bytearray() (accumulated speech frames)
 silence_counts = {}     # username -> int
 user_langs = {}         # username -> {"src":..., "tgt":...}
+manager = None          # WebSocket connection manager to Node.js
 
 # thresholds
 vad_mode = 2                 # 0..3
 vad = webrtcvad.Vad(vad_mode)
-max_silence_frames = 30          # ~600ms with 20ms frames - allows full phrases
+max_silence_frames = 18          # ~360ms with 20ms frames (faster end-of-speech detection)
 min_speech_bytes = FRAME_SIZE*2  # minimum speech to attempt recognition (tunable)
 max_accumulated_bytes = SAMPLE_RATE * SAMPLE_WIDTH * 6  # 12 seconds safety cap
 
@@ -136,26 +172,48 @@ async def flush_speech(username, roomId=None):
         return
     translated = await asyncio.to_thread(translate, text, src, tgt)
     print(f"[{username} Translated] {translated}")
-    mp3_bytes = await asyncio.to_thread(tts_mp3_bytes, translated, tgt)
-    if mp3_bytes:
-        print(f"[{username}] TTS bytes: {len(mp3_bytes)}")
-    payload = {
+
+    # 🚀 1. Fast path: Broadcast subtitles immediately without waiting for TTS download
+    subtitle_payload = {
         "type": "translation",
         "original_text": text,
         "text": translated,
-        "audio_b64": base64.b64encode(mp3_bytes).decode("utf-8") if mp3_bytes else "",
+        "audio_b64": "",
         "src": src,
         "tgt": tgt,
         "username": username,
         "roomId": roomId,
         "timestamp": int(time.time() * 1000)
     }
-    try:
-        if roomId:
-            await manager.broadcast(roomId, payload)
-        print(f"✅ Sent translation for {username} (room={roomId})")
-    except Exception as e:
-        print("[WS send error]", e)
+    if roomId and manager:
+        try:
+            await manager.broadcast(roomId, subtitle_payload)
+            print(f"⚡ Instant subtitle sent for {username} (room={roomId})")
+        except Exception as e:
+            print("[WS send error - subtitle]", e)
+    elif not manager:
+        print(f"⚠️ Cannot send subtitle for {username}: WebSocket bridge to Node is not connected yet")
+
+    # 🚀 2. Fast in-memory TTS generation and immediate audio playback broadcast
+    mp3_bytes = await asyncio.to_thread(tts_mp3_bytes, translated, tgt)
+    if mp3_bytes and roomId and manager:
+        print(f"[{username}] TTS bytes ready: {len(mp3_bytes)}")
+        audio_payload = {
+            "type": "translation",
+            "original_text": "",
+            "text": "",
+            "audio_b64": base64.b64encode(mp3_bytes).decode("utf-8"),
+            "src": src,
+            "tgt": tgt,
+            "username": username,
+            "roomId": roomId,
+            "timestamp": int(time.time() * 1000)
+        }
+        try:
+            await manager.broadcast(roomId, audio_payload)
+            print(f"🔊 Audio sent for {username} (room={roomId})")
+        except Exception as e:
+            print("[WS send error - audio]", e)
 
 # --- WebRTC & Routing ---
 # --- WebSocket Client Bridge (Connects to Node.js) ---
@@ -194,6 +252,7 @@ async def ws_handler():
                         audio_buffers[username].extend(chunk)
                         await process_user_frames(username, roomId=roomId)
         except Exception as e:
+            manager = None
             print(f"❌ WebSocket connection lost: {e}. Retrying in 3s...")
             await asyncio.sleep(3)
 
