@@ -43,22 +43,40 @@ def normalize_lang(code: str) -> str:
         return ""
     return LANG_ALIASES.get(code.strip().lower(), code.strip().lower())
 
-# --- Direct Google Translate (Bypasses scraper 429 rate limit) ---
+# --- Resilient Multi-Engine Translation ---
+_translation_cache = {}
 _translators = {}
 
+def mymemory_translate(text: str, src: str, tgt: str) -> str:
+    """Uses MyMemory translation API (completely independent of Google, free from Google 429 blocks)"""
+    try:
+        s = src.split("-")[0].lower()
+        t = tgt.split("-")[0].lower()
+        url = f"https://api.mymemory.translated.net/get?q={urllib.parse.quote(text)}&langpair={s}|{t}"
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"})
+        with urllib.request.urlopen(req, timeout=4) as response:
+            data = json.loads(response.read().decode("utf-8"))
+            if data and "responseData" in data and "translatedText" in data["responseData"]:
+                res = data["responseData"]["translatedText"]
+                if res and not res.startswith("MYMEMORY WARNING"):
+                    return res.strip()
+    except Exception as e:
+        print(f"[MyMemory Error] {e}")
+    return ""
+
 def direct_google_translate(text: str, src: str, tgt: str) -> str:
-    """Uses Google's open translation API endpoint directly to avoid rate limits"""
+    """Uses Google's open endpoint"""
     try:
         url = f"https://translate.googleapis.com/translate_a/single?client=gtx&sl={src}&tl={tgt}&dt=t&q={urllib.parse.quote(text)}"
         req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"})
-        with urllib.request.urlopen(req, timeout=5) as response:
+        with urllib.request.urlopen(req, timeout=4) as response:
             res = json.loads(response.read().decode("utf-8"))
             if res and isinstance(res, list) and len(res) > 0 and isinstance(res[0], list):
                 translated_text = "".join([part[0] for part in res[0] if part and len(part) > 0 and part[0]])
                 if translated_text.strip():
                     return translated_text.strip()
     except Exception as e:
-        print(f"[Direct Translate Error] {e}")
+        print(f"[Direct Google Error] {e}")
     return ""
 
 def translate(text, source_lang=None, target_lang=None):
@@ -67,27 +85,42 @@ def translate(text, source_lang=None, target_lang=None):
     src = normalize_lang(source_lang or SOURCE_LANG)
     tgt = normalize_lang(target_lang or TARGET_LANG)
     
-    # 1. Try direct Google API first (fastest, no 429 scraper block)
-    res = direct_google_translate(text, src, tgt)
+    clean_text = text.strip()
+    cache_key = (clean_text.lower(), src, tgt)
+    if cache_key in _translation_cache:
+        print(f"⚡ [Cache Hit] {clean_text} -> {_translation_cache[cache_key]}")
+        return _translation_cache[cache_key]
+
+    # 1. Try MyMemory first (bypasses Google 429 rate limit)
+    res = mymemory_translate(clean_text, src, tgt)
+    
+    # 2. Try direct Google endpoint
+    if not res:
+        res = direct_google_translate(clean_text, src, tgt)
+        
+    # 3. Fallback to deep-translator
+    if not res:
+        try:
+            key = (src, tgt)
+            if key not in _translators:
+                _translators[key] = GoogleTranslator(source=src, target=tgt)
+            res = _translators[key].translate(clean_text)
+        except Exception as e:
+            print(f"[DeepTranslator Fallback Error] {e}")
+
     if res:
+        _translation_cache[cache_key] = res
+        if len(_translation_cache) > 200:
+            _translation_cache.pop(next(iter(_translation_cache)))
         return res
 
-    # 2. Fallback to deep-translator
-    key = (src, tgt)
-    if key not in _translators:
-        _translators[key] = GoogleTranslator(source=src, target=tgt)
-    try:
-        return _translators[key].translate(text)
-    except Exception as e:
-        print(f"[Translation Fallback Error] {e}")
-        try:
-            _translators[key] = GoogleTranslator(source=src, target=tgt)
-            return _translators[key].translate(text)
-        except Exception:
-            return ""
+    # Fallback to original text if all translation APIs temporarily fail
+    return clean_text
 
 def tts_mp3_bytes(text, lang=None):
     """Fast in-memory TTS generation without disk I/O"""
+    if not text or not text.strip():
+        return b""
     lng = normalize_lang(lang or TARGET_LANG)
     try:
         fp = io.BytesIO()
